@@ -1,18 +1,24 @@
 using System.Net;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace Zartbitter;
 
 internal class Server
 {
-  private readonly SqliteConnection connection;
+  private static readonly Encoding utf8_no_bom = new UTF8Encoding(false);
+
+  private readonly Database database;
   private readonly HttpListener system_listener;
 
-  public Server(SqliteConnection connection, HttpListener system_listener)
+  public Server(Database database, HttpListener system_listener)
   {
-    this.connection = connection;
+    this.database = database;
     this.system_listener = system_listener;
   }
+
+  public DirectoryInfo BlobStorageDirectory { get; set; }
+  public DirectoryInfo UploadStorageDirectory { get; set; }
 
   public void Run()
   {
@@ -32,7 +38,11 @@ internal class Server
       var url = request.Url!;
       var path = url.AbsolutePath!;
 
-      Log.Debug("Request for url {0}", url);
+      Log.Debug("{1}-Request for url {0}", url, request.HttpMethod);
+      foreach (var key in request.Headers.AllKeys)
+      {
+        Log.Debug("{0}: {1}", key!, request.Headers[key]!);
+      }
 
       if (path == "/files")
       {
@@ -41,6 +51,8 @@ internal class Server
       }
       else if (path == "/files/")
       {
+        // Redirect to canonical path. Wouldn't make sense to query this
+        // as an artifact, as artifact names must be unique and non-empty.
         response.Redirect("/files");
       }
       else if (path.StartsWith("/files/"))
@@ -54,6 +66,30 @@ internal class Server
       {
         // TODO: Implement API upload endpoint
         Log.Debug("Requesting api: upload");
+
+        if (request.HttpMethod.ToUpper() != "PUT")
+          throw new HttpException(HttpStatusCode.MethodNotAllowed, "Method must be PUT");
+
+        var upload_token = request.Headers["X-Zartbitter-Upload"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Upload is missing.");
+        var secret_token = request.Headers["X-Zartbitter-Secret"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Secret is missing.");
+        var content_hash = request.Headers["X-Zartbitter-Hash"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Hash is missing.");
+        var content_type = request.Headers["Content-Type"] ?? throw new HttpException(HttpStatusCode.BadRequest, "Content-Type is missing.");
+
+        var temp_file_name = Path.Combine(UploadStorageDirectory.FullName, Path.ChangeExtension(Path.GetRandomFileName(), ".dat"));
+        try
+        {
+          Log.Debug("Uploading to {0}", temp_file_name);
+
+          using (var file = File.Open(temp_file_name, FileMode.Create, FileAccess.ReadWrite))
+          {
+            request.InputStream.CopyTo(file);
+          }
+
+        }
+        finally
+        {
+          File.Delete(temp_file_name);
+        }
       }
       else if (path == "/api/metadata")
       {
@@ -71,6 +107,14 @@ internal class Server
         response.StatusCode = (int)HttpStatusCode.NotFound;
       }
     }
+    catch (HttpException ex)
+    {
+      response.StatusCode = (int)ex.StatusCode;
+      using (var writer = new StreamWriter(response.OutputStream, utf8_no_bom))
+      {
+        writer.WriteLine(ex.Message);
+      }
+    }
     catch (Exception ex)
     {
       Log.Error("Failed to handle request at url {0}:", request.Url!);
@@ -85,4 +129,17 @@ internal class Server
       }
     }
   }
+}
+
+[System.Serializable]
+public class HttpException : System.Exception
+{
+  public HttpException(HttpStatusCode status_code) { this.StatusCode = status_code; }
+  public HttpException(HttpStatusCode status_code, string message) : base(message) { this.StatusCode = status_code; }
+  public HttpException(HttpStatusCode status_code, string message, System.Exception inner) : base(message, inner) { this.StatusCode = status_code; }
+  protected HttpException(
+    System.Runtime.Serialization.SerializationInfo info,
+    System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
+
+  public HttpStatusCode StatusCode { get; }
 }

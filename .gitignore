@@ -4,3 +4,4 @@ bin/
 
 # the demo data set used for development
 demo/
+.vscode/

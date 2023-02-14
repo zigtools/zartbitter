@@ -1,6 +1,5 @@
 ﻿using System.Reflection;
 using System.Text;
-using Microsoft.Data.Sqlite;
 using System.Net;
 using System.Net.Http;
 
@@ -25,19 +24,9 @@ static class Application
     var upload_storage_dir = root_directory.CreateSubdirectory("uploads");
 
     blob_storage_dir.Create();
+    upload_storage_dir.Create();
 
-    using var connection = new SqliteConnection($"Data Source=\"{database_file_info}\"");
-    connection.Open();
-
-    {
-      var init_script = new StreamReader(OpenEmbeddedResource("init.sql"), Encoding.UTF8).ReadToEnd();
-      foreach (var stmt in init_script.Split(';'))
-      {
-        using var init_cmd = connection.CreateCommand();
-        init_cmd.CommandText = stmt;
-        init_cmd.ExecuteNonQuery();
-      }
-    }
+    using var database = new Database($"Data Source=\"{database_file_info}\"");
 
     var system_listener = new HttpListener();
     system_listener.Prefixes.Add("http://+:8080/"); // TODO: Add configuration options
@@ -45,14 +34,18 @@ static class Application
 
     Log.Message("Ready.");
 
-    var server = new Server(connection, system_listener);
+    var server = new Server(database, system_listener)
+    {
+      BlobStorageDirectory = blob_storage_dir,
+      UploadStorageDirectory = upload_storage_dir,
+    };
 
     server.Run();
 
     return 0;
   }
 
-  static Stream OpenEmbeddedResource(string path)
+  public static Stream OpenEmbeddedResource(string path)
   {
     var assembly = Assembly.GetExecutingAssembly();
     return assembly.GetManifestResourceStream(path) ?? throw new FileNotFoundException(path);

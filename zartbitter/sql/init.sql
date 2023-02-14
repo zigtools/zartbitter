@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS "artifacts"
 -- contains a blob, checksums and some basic meta data.
 CREATE TABLE IF NOT EXISTS "revisions"
 (
-  "artifact"          TEXT NOT NULL REFERENCES "artifacts.unique_name",
+  "artifact"          TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
 
   "blob_storage_path" TEXT NOT NULL,
 
@@ -40,9 +40,11 @@ CREATE TABLE IF NOT EXISTS "revisions"
 -- There can be more than one access tokens per artifact.
 CREATE TABLE IF NOT EXISTS "access_tokens"
 (
-  "artifact"   TEXT NOT NULL REFERENCES "artifacts.unique_name",
+  "artifact"   TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
   "token"      TEXT NOT NULL,
-  "expires_at" TEXT DEFAULT NULL -- optional timestamp with expiration date
+  "expires_at" TEXT DEFAULT NULL, -- optional timestamp with expiration date
+
+  UNIQUE ("artifact", "token")
 );
 
 -- Artifacts can only be updated via upload tokens. Each token is composed
@@ -51,10 +53,12 @@ CREATE TABLE IF NOT EXISTS "access_tokens"
 -- the artifact.
 CREATE TABLE IF NOT EXISTS "upload_tokens"
 (
-  "artifact"       TEXT NOT NULL REFERENCES "artifacts.unique_name",
+  "artifact"       TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
   "upload_token"   TEXT NOT NULL UNIQUE,
   "security_token" TEXT NOT NULL,
-  "expires_at"     TEXT DEFAULT NULL -- optional timestamp with expiration date
+  "expires_at"     TEXT DEFAULT NULL, -- optional timestamp with expiration date
+
+  UNIQUE ("artifact", "upload_token")
 );
 
 -- Additional, arbitrary metadata per artifact. Basically a set of key-value pairs
@@ -64,7 +68,7 @@ CREATE TABLE IF NOT EXISTS "upload_tokens"
 -- metadata tag ("nuget", "") can be enough to expose artifacts into a repository.
 CREATE TABLE IF NOT EXISTS "metadata"
 (
-  artifact TEXT NOT NULL REFERENCES "artifacts.unique_name",
+  "artifact" TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
   
   "key"       TEXT    NOT NULL,
   "value"     TEXT    NOT NULL,
