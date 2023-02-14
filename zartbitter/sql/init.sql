@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS "revisions"
 
   -- Checksums for this blob
   "md5sum"            TEXT NOT NULL,
-  "shasum"            TEXT NOT NULL,
   "sha1sum"           TEXT NOT NULL,
   "sha256sum"         TEXT NOT NULL,
   "sha512sum"         TEXT NOT NULL,

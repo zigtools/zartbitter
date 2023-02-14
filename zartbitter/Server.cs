@@ -1,6 +1,8 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
+using Semver;
 
 namespace Zartbitter;
 
@@ -33,6 +35,7 @@ internal class Server
   {
     var request = context.Request;
     using var response = context.Response;
+
     try
     {
       var url = request.Url!;
@@ -73,7 +76,12 @@ internal class Server
         var upload_token = request.Headers["X-Zartbitter-Upload"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Upload is missing.");
         var secret_token = request.Headers["X-Zartbitter-Secret"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Secret is missing.");
         var content_hash = request.Headers["X-Zartbitter-Hash"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Hash is missing.");
+        var version_number_str = request.Headers["X-Zartbitter-Version"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Version is missing.");
         var content_type = request.Headers["Content-Type"] ?? throw new HttpException(HttpStatusCode.BadRequest, "Content-Type is missing.");
+
+        var version = SemVersion.Parse(version_number_str, SemVersionStyles.Strict);
+
+        Log.Debug("Uploading data for version {0}", version);
 
         this.database.GetArtifactFromUploadToken.Parameters["$upload_token"].Value = upload_token;
         var artifact_name = (string?)this.database.GetArtifactFromUploadToken.ExecuteScalar() ?? throw new HttpException(HttpStatusCode.NotFound);
@@ -90,19 +98,55 @@ internal class Server
         Log.Message("Upload {0}", artifact_name);
 
         var temp_file_name = Path.Combine(UploadStorageDirectory.FullName, Path.ChangeExtension(Path.GetRandomFileName(), ".dat"));
+        var upload_ok = false;
         try
         {
           Log.Debug("Uploading to {0}", temp_file_name);
 
+          var hash_md5_computer = new HashComputer(MD5.Create());
+          var hash_sha1_computer = new HashComputer(SHA1.Create());
+          var hash_sha256_computer = new HashComputer(SHA256.Create());
+          var hash_sha512_computer = new HashComputer(SHA512.Create());
+
+          var hashers = new[] {
+            hash_md5_computer,
+            hash_sha1_computer,
+            hash_sha256_computer,
+            hash_sha512_computer,
+          };
+
           using (var file = File.Open(temp_file_name, FileMode.Create, FileAccess.ReadWrite))
           {
-            request.InputStream.CopyTo(file);
+            var chunk = new byte[8192];
+
+            while (true)
+            {
+              int real_length = request.InputStream.Read(chunk, 0, chunk.Length);
+              if (real_length == 0)
+                break;
+
+              file.Write(chunk, 0, real_length);
+              foreach (var item in hashers)
+              {
+                item.Feed(chunk, 0, real_length);
+              }
+            }
           }
 
+          var hash_md5 = hash_md5_computer.GetHash();
+          var hash_sha1 = hash_sha1_computer.GetHash();
+          var hash_sha256 = hash_sha256_computer.GetHash();
+          var hash_sha512 = hash_sha512_computer.GetHash();
+
+          Log.Debug("MD5:    {0}", BitConverter.ToString(hash_md5));
+          Log.Debug("SHA1:   {0}", BitConverter.ToString(hash_sha1));
+          Log.Debug("SHA256: {0}", BitConverter.ToString(hash_sha256));
+          Log.Debug("SHA512: {0}", BitConverter.ToString(hash_sha512));
         }
         finally
         {
-          File.Delete(temp_file_name);
+          if (!upload_ok)
+            File.Delete(temp_file_name);
         }
       }
       else if (path == "/api/metadata")
@@ -156,4 +200,25 @@ public class HttpException : System.Exception
     System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
 
   public HttpStatusCode StatusCode { get; }
+}
+
+public sealed class HashComputer
+{
+  private readonly HashAlgorithm hasher;
+
+  public HashComputer(HashAlgorithm hasher)
+  {
+    this.hasher = hasher;
+  }
+
+  public void Feed(byte[] chunk, int offset, int length)
+  {
+    hasher.TransformBlock(chunk, offset, length, null, 0);
+  }
+
+  public byte[] GetHash()
+  {
+    this.hasher.TransformFinalBlock(new byte[0], 0, 0);
+    return this.hasher.Hash!.ToArray();
+  }
 }

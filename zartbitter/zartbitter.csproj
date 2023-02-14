@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="7.0.2" />
+    <PackageReference Include="semver" Version="2.2.0" />
   </ItemGroup>
 
   <ItemGroup>

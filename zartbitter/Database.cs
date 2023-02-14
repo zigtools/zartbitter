@@ -57,6 +57,12 @@ sealed class Database : IDisposable
   [PreparedStatement("SELECT security_token == $security_token[text] FROM upload_tokens WHERE upload_token == $upload_token[text]")]
   public SqliteCommand VerifySecurityTokenCorrect { get; private set; }
 
+  [PreparedStatement("SELECT 1 FROM revisions WHERE artifact = $artifact[text] AND version = $artifact[version]")]
+  public SqliteCommand CheckVersionExists { get; private set; }
+
+  [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text]);")]
+  public SqliteCommand CreateNewRevision { get; private set; }
+
   [System.AttributeUsage(System.AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
   sealed class PreparedStatementAttribute : System.Attribute
   {
