@@ -1,2 +1,6 @@
+# the c# artifact folders
 obj/
 bin/
+
+# the demo data set used for development
+demo/
