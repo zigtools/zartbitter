@@ -75,6 +75,20 @@ internal class Server
         var content_hash = request.Headers["X-Zartbitter-Hash"] ?? throw new HttpException(HttpStatusCode.BadRequest, "X-Zartbitter-Hash is missing.");
         var content_type = request.Headers["Content-Type"] ?? throw new HttpException(HttpStatusCode.BadRequest, "Content-Type is missing.");
 
+        this.database.GetArtifactFromUploadToken.Parameters["$upload_token"].Value = upload_token;
+        var artifact_name = (string?)this.database.GetArtifactFromUploadToken.ExecuteScalar() ?? throw new HttpException(HttpStatusCode.NotFound);
+
+        this.database.VerifySecurityTokenCorrect.Parameters["$upload_token"].Value = upload_token;
+        this.database.VerifySecurityTokenCorrect.Parameters["$security_token"].Value = secret_token;
+        var artifact_valid = (long?)this.database.VerifySecurityTokenCorrect.ExecuteScalar() ?? throw new HttpException(HttpStatusCode.NotFound);
+
+        if (artifact_valid == 0)
+        {
+          throw new HttpException(HttpStatusCode.Unauthorized, "Access denied: Invalid security token.");
+        }
+
+        Log.Message("Upload {0}", artifact_name);
+
         var temp_file_name = Path.Combine(UploadStorageDirectory.FullName, Path.ChangeExtension(Path.GetRandomFileName(), ".dat"));
         try
         {
@@ -134,7 +148,7 @@ internal class Server
 [System.Serializable]
 public class HttpException : System.Exception
 {
-  public HttpException(HttpStatusCode status_code) { this.StatusCode = status_code; }
+  public HttpException(HttpStatusCode status_code) : this(status_code, status_code.ToString()) { }
   public HttpException(HttpStatusCode status_code, string message) : base(message) { this.StatusCode = status_code; }
   public HttpException(HttpStatusCode status_code, string message, System.Exception inner) : base(message, inner) { this.StatusCode = status_code; }
   protected HttpException(
