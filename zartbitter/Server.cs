@@ -115,7 +115,6 @@ internal class Server
           Log.Message("Uploading new version {1} for artifact '{0}'", version, artifact_name);
 
           var temp_file_name = Path.Combine(UploadStorageDirectory.FullName, Path.ChangeExtension(Path.GetRandomFileName(), ".dat"));
-          var upload_ok = false;
           try
           {
             Log.Debug("Uploading to {0}", temp_file_name);
@@ -202,11 +201,13 @@ internal class Server
               }
               Debug.Assert(chosen_file_name != null);
 
-              blob_storage_path = Path.Combine(BlobStorageDirectory.FullName, chosen_file_name);
 
-              Log.Debug("Uploaded file as {0}, moving...", blob_storage_path);
-              File.Move(temp_file_name, blob_storage_path, false);
-              temp_file_name = blob_storage_path;
+              var full_path = Path.Combine(BlobStorageDirectory.FullName, chosen_file_name);
+
+              Log.Debug("Uploaded file as {0}, moving...", full_path);
+              File.Move(temp_file_name, full_path, false);
+              temp_file_name = full_path;
+              blob_storage_path = chosen_file_name;
             }
             else
             {
