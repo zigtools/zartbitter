@@ -64,6 +64,9 @@ sealed class Database : IDisposable
   [PreparedStatement("SELECT 1 FROM revisions WHERE artifact = $artifact[text] AND version = $version[text]")]
   public PreparedStatement CheckVersionExists { get; private set; }
 
+  [PreparedStatement("SELECT blob_storage_path FROM revisions WHERE sha256sum = $checksum[text]")]
+  public PreparedStatement CheckFileHashExists { get; private set; }
+
   [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text])")]
   public PreparedStatement CreateNewRevision { get; private set; }
 
@@ -104,7 +107,7 @@ sealed class Database : IDisposable
       this.command.Prepare();
     }
 
-    public void Prepare(params ParameterBinding[] bindings)
+    private void Prepare(params ParameterBinding[] bindings)
     {
       if (bindings.Length > this.parameters.Count)
         throw new ArgumentOutOfRangeException(nameof(bindings), "Too many bindings for this command.");
@@ -124,19 +127,31 @@ sealed class Database : IDisposable
       }
     }
 
-    public T? ExecuteScalar<T>()
+    public T? ExecuteScalar<T>(params ParameterBinding[] bindings)
     {
-      return (T?)this.command.ExecuteScalar();
+      lock (this.command)
+      {
+        this.Prepare(bindings);
+        return (T?)this.command.ExecuteScalar();
+      }
     }
 
-    public SqliteDataReader ExecuteReader()
+    public SqliteDataReader ExecuteReader(params ParameterBinding[] bindings)
     {
-      return this.command.ExecuteReader();
+      lock (this.command)
+      {
+        this.Prepare(bindings);
+        return this.command.ExecuteReader();
+      }
     }
 
-    public void ExecuteNonQuery()
+    public void ExecuteNonQuery(params ParameterBinding[] bindings)
     {
-      this.command.ExecuteNonQuery();
+      lock (this.command)
+      {
+        this.Prepare(bindings);
+        this.command.ExecuteNonQuery();
+      }
     }
   }
 
