@@ -30,13 +30,17 @@ sealed class Database : IDisposable
       if (prepared_statement_info == null)
         continue;
 
-      var cmd = this.connection.CreateCommand();
-      cmd.CommandText = prepared_statement_info.SqlCode;
-      foreach (var param in prepared_statement_info.Parameters)
+      try
       {
-        cmd.Parameters.Add(param.Key, param.Value);
+        var stmt = new PreparedStatement(this.connection, prepared_statement_info.SqlCode);
+        prop.SetValue(this, stmt);
       }
-      prop.SetValue(this, cmd);
+      catch (Exception ex)
+      {
+        Log.Fatal("Failed to prepare statement {0}: {1}", prop.Name, ex.Message);
+        Log.Fatal("SQL Code: {0}", prepared_statement_info.SqlCode);
+        throw;
+      }
     }
   }
 
@@ -52,44 +56,122 @@ sealed class Database : IDisposable
   }
 
   [PreparedStatement("SELECT artifact FROM upload_tokens WHERE upload_token == $upload_token[text]")]
-  public SqliteCommand GetArtifactFromUploadToken { get; private set; }
+  public PreparedStatement GetArtifactFromUploadToken { get; private set; }
 
   [PreparedStatement("SELECT security_token == $security_token[text] FROM upload_tokens WHERE upload_token == $upload_token[text]")]
-  public SqliteCommand VerifySecurityTokenCorrect { get; private set; }
+  public PreparedStatement VerifySecurityTokenCorrect { get; private set; }
 
-  [PreparedStatement("SELECT 1 FROM revisions WHERE artifact = $artifact[text] AND version = $artifact[version]")]
-  public SqliteCommand CheckVersionExists { get; private set; }
+  [PreparedStatement("SELECT 1 FROM revisions WHERE artifact = $artifact[text] AND version = $version[text]")]
+  public PreparedStatement CheckVersionExists { get; private set; }
 
-  [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text]);")]
-  public SqliteCommand CreateNewRevision { get; private set; }
+  [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text])")]
+  public PreparedStatement CreateNewRevision { get; private set; }
 
-  [System.AttributeUsage(System.AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
-  sealed class PreparedStatementAttribute : System.Attribute
+
+  public class PreparedStatement
   {
     private static readonly Regex parameter_regex = new Regex(@"(?<name>\$\w+)\[(?<type>\w+)\]");
 
+    private readonly SqliteCommand command;
     private readonly string sql_code;
     private readonly Dictionary<string, SqliteType> parameters;
 
-    public PreparedStatementAttribute(string sql_code)
+    internal PreparedStatement(SqliteConnection con, string command)
     {
       this.parameters = new Dictionary<string, SqliteType>();
-      this.sql_code = parameter_regex.Replace(sql_code, (match) =>
+      this.sql_code = parameter_regex.Replace(command, (match) =>
       {
-        var name = match.Groups["name"].Value;
-        var type = Enum.Parse<SqliteType>(match.Groups["type"].Value, true);
+        var name_str = match.Groups["name"].Value;
+        var type_str = match.Groups["type"].Value;
+
+        var name = name_str.Substring(1);
+        var type = Enum.Parse<SqliteType>(type_str, true);
 
         if (!this.parameters.TryAdd(name, type))
         {
           Debug.Assert(this.parameters[name] == type);
         }
 
-        return name;
+        return "$" + name;
       });
+
+      this.command = con.CreateCommand();
+      this.command.CommandText = this.sql_code;
+      foreach (var param in this.parameters)
+      {
+        this.command.Parameters.Add("$" + param.Key, param.Value);
+      }
+      this.command.Prepare();
     }
 
-    public string SqlCode => this.sql_code;
-    public Dictionary<string, SqliteType> Parameters => this.parameters;
+    public void Prepare(params ParameterBinding[] bindings)
+    {
+      if (bindings.Length > this.parameters.Count)
+        throw new ArgumentOutOfRangeException(nameof(bindings), "Too many bindings for this command.");
+      var bindings_dict = bindings.ToDictionary(b => b.Key);
+      if (bindings_dict.Count != bindings.Length)
+        throw new ArgumentOutOfRangeException(nameof(bindings), "Duplicate keys!");
+      foreach (var kv in bindings_dict)
+      {
+        if (!this.parameters.TryGetValue(kv.Key, out var src_type))
+          throw new ArgumentOutOfRangeException(nameof(bindings), "Unknown parameter: " + kv.Key);
+        if (kv.Value.Type != src_type)
+          throw new ArgumentOutOfRangeException(nameof(bindings), $"Type mismatch: Expected {src_type}, got {kv.Value.Type} for parameter {kv.Key}");
+      }
+      foreach (var kv in bindings_dict)
+      {
+        this.command.Parameters["$" + kv.Key].Value = kv.Value.Value;
+      }
+    }
+
+    public T? ExecuteScalar<T>()
+    {
+      return (T?)this.command.ExecuteScalar();
+    }
+
+    public SqliteDataReader ExecuteReader()
+    {
+      return this.command.ExecuteReader();
+    }
+
+    public void ExecuteNonQuery()
+    {
+      this.command.ExecuteNonQuery();
+    }
   }
 
+  [System.AttributeUsage(System.AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
+  sealed class PreparedStatementAttribute : System.Attribute
+  {
+    readonly string sql_code;
+    public PreparedStatementAttribute(string sql_code)
+    {
+      this.sql_code = sql_code;
+    }
+
+    public string SqlCode
+    {
+      get { return sql_code; }
+    }
+  }
+}
+
+
+public class ParameterBinding
+{
+  private ParameterBinding(SqliteType type, string key, object value)
+  {
+    this.Type = type;
+    this.Key = key;
+    this.Value = value;
+  }
+
+  public static ParameterBinding Text(string key, string value) => new ParameterBinding(SqliteType.Text, key, value);
+  public static ParameterBinding Integer(string key, long value) => new ParameterBinding(SqliteType.Integer, key, value);
+  public static ParameterBinding Blob(string key, byte[] value) => new ParameterBinding(SqliteType.Blob, key, value);
+  public static ParameterBinding Real(string key, double value) => new ParameterBinding(SqliteType.Real, key, value);
+
+  public SqliteType Type { get; }
+  public string Key { get; }
+  public object Value { get; }
 }

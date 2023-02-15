@@ -83,12 +83,16 @@ internal class Server
 
         Log.Debug("Uploading data for version {0}", version);
 
-        this.database.GetArtifactFromUploadToken.Parameters["$upload_token"].Value = upload_token;
-        var artifact_name = (string?)this.database.GetArtifactFromUploadToken.ExecuteScalar() ?? throw new HttpException(HttpStatusCode.NotFound);
+        this.database.GetArtifactFromUploadToken.Prepare(
+            ParameterBinding.Text("upload_token", upload_token)
+        );
+        var artifact_name = this.database.GetArtifactFromUploadToken.ExecuteScalar<string>() ?? throw new HttpException(HttpStatusCode.NotFound);
 
-        this.database.VerifySecurityTokenCorrect.Parameters["$upload_token"].Value = upload_token;
-        this.database.VerifySecurityTokenCorrect.Parameters["$security_token"].Value = secret_token;
-        var artifact_valid = (long?)this.database.VerifySecurityTokenCorrect.ExecuteScalar() ?? throw new HttpException(HttpStatusCode.NotFound);
+        this.database.VerifySecurityTokenCorrect.Prepare(
+          ParameterBinding.Text("upload_token", upload_token),
+          ParameterBinding.Text("security_token", secret_token)
+        );
+        var artifact_valid = this.database.VerifySecurityTokenCorrect.ExecuteScalar<long?>() ?? throw new HttpException(HttpStatusCode.NotFound);
 
         if (artifact_valid == 0)
         {
