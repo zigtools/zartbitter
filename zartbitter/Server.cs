@@ -86,6 +86,12 @@ internal class Server
           });
         }
       }
+      else if (path == "/artifacts/")
+      {
+        // Redirect to canonical path. Wouldn't make sense to query this
+        // as an artifact, as artifact names must be unique and non-empty.
+        response.Redirect("/artifacts");
+      }
       else if (path == "/files")
       {
         response.ContentEncoding = utf8_no_bom;
