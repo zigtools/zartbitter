@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Semver;
+using zartbitter;
 
 namespace Zartbitter;
 
@@ -45,15 +47,68 @@ internal class Server
       var path = url.AbsolutePath!;
 
       Log.Debug("{1}-Request for url {0}", url, request.HttpMethod);
-      foreach (var key in request.Headers.AllKeys)
-      {
-        Log.Debug("{0}: {1}", key!, request.Headers[key]!);
-      }
+      // foreach (var key in request.Headers.AllKeys)
+      // {
+      //   Log.Debug("{0}: {1}", key!, request.Headers[key]!);
+      // }
 
-      if (path == "/files")
+      if (path == "/")
       {
-        // TODO: List all public files here
-        Log.Debug("Requesting artifact listing");
+        response.ContentEncoding = utf8_no_bom;
+        response.ContentType = "text/html";
+        using (var sw = new StreamWriter(response.OutputStream, utf8_no_bom))
+        {
+          RenderFileListing(sw, "/", "Zartbitter Artifact Repository", null, new string[0], (emit) =>
+          {
+            emit(Icon.Dir, "artifacts", new string[0]);
+            emit(Icon.Dir, "files", new string[0]);
+          });
+        }
+      }
+      else if (path == "/artifacts")
+      {
+        response.ContentEncoding = utf8_no_bom;
+        response.ContentType = "text/html";
+        using (var sw = new StreamWriter(response.OutputStream, utf8_no_bom))
+        {
+          RenderFileListing(sw, "/artifacts/", "Zartbitter Artifacts", Tuple.Create("/", "Overview"), new[] { "Description" }, (emit) =>
+          {
+            using (var reader = this.database.ListAllPublicArtifacts.ExecuteReader())
+            {
+              while (reader.Read())
+              {
+                var name = reader.GetString(0);
+                var desc = reader.GetString(1);
+
+                emit(Icon.File, name, new[] { desc });
+              }
+            }
+          });
+        }
+      }
+      else if (path == "/files")
+      {
+        response.ContentEncoding = utf8_no_bom;
+        response.ContentType = "text/html";
+        using (var sw = new StreamWriter(response.OutputStream, utf8_no_bom))
+        {
+          RenderFileListing(sw, "/files/", "Zartbitter Files", Tuple.Create("/", "Overview"), new[] { "Mime Type", "Date", "Size" }, (emit) =>
+          {
+            using (var reader = this.database.ListAllPublicFiles.ExecuteReader())
+            {
+              // file_name, mime_type, creation_date, size
+              while (reader.Read())
+              {
+                var name = reader.GetString(0);
+                var mime = reader.GetString(1);
+                var cdate = reader.GetString(2);
+                var size = reader.GetInt64(3);
+
+                emit(Icon.File, name, new[] { mime, cdate, GetBytesReadable(size) });
+              }
+            }
+          });
+        }
       }
       else if (path == "/files/")
       {
@@ -131,6 +186,7 @@ internal class Server
               hash_sha512_computer,
             };
 
+            long copied_bytes = 0;
             using (var file = File.Open(temp_file_name, FileMode.Create, FileAccess.ReadWrite))
             {
               var chunk = new byte[8192];
@@ -146,6 +202,7 @@ internal class Server
                 {
                   item.Feed(chunk, 0, real_length);
                 }
+                copied_bytes += real_length;
               }
             }
 
@@ -221,9 +278,9 @@ internal class Server
               ParameterBinding.Text("sha1sum", hash_sha1),
               ParameterBinding.Text("sha256sum", hash_sha256),
               ParameterBinding.Text("sha512sum", hash_sha512),
-              ParameterBinding.Text("version", version.ToString())
+              ParameterBinding.Text("version", version.ToString()),
+              ParameterBinding.Integer("size", copied_bytes)
             );
-            upload_ok = true;
           }
           finally
           {
@@ -236,15 +293,22 @@ internal class Server
         // TODO: Implement API upload endpoint
         Log.Debug("Requesting api: metadata");
       }
-      else if (path == "/")
-      {
-        Log.Debug("Requesting front matter.");
-        // TODO: List the regular api end points here
-      }
       else
       {
-        Log.Warning("User requested unknown path: '{0}'", path);
-        response.StatusCode = (int)HttpStatusCode.NotFound;
+        try
+        {
+          using (var resource = Application.OpenEmbeddedResource(path.Substring(1).Replace("/", ".")))
+          {
+            response.ContentType = MimeTypes.GetMimeType(path);
+            using (response.OutputStream)
+              resource.CopyTo(response.OutputStream);
+          }
+        }
+        catch (FileNotFoundException ex)
+        {
+          Log.Warning("User requested unknown path: '{0}' ({1})", path, ex.Message);
+          response.StatusCode = (int)HttpStatusCode.NotFound;
+        }
       }
     }
     catch (HttpException ex)
@@ -268,6 +332,122 @@ internal class Server
         // silently ignore error
       }
     }
+  }
+
+  private static readonly string file_table_template = new StreamReader(Application.OpenEmbeddedResource("file_table.html"), utf8_no_bom).ReadToEnd();
+  private static readonly Regex file_table_pattern = new Regex(@"<!--\s*(\w+)\s*-->", RegexOptions.Compiled);
+
+  public enum Icon
+  {
+    Dir,
+    File,
+    Up,
+  }
+
+  public static void RenderFileListing(StreamWriter writer, string link_prefix, string title, Tuple<string, string>? uplink, string[] columns, Action<Action<Icon, string, string[]>> items)
+  {
+    writer.WriteLine(file_table_pattern.Replace(file_table_template, (match) =>
+    {
+      var key = match.Groups[1].Value.ToUpper();
+      switch (key)
+      {
+        case "TITLE": return title;
+
+        case "UPLINK":
+          using (var tw = new StringWriter())
+          {
+            if (uplink != null)
+            {
+              tw.WriteLine("  <div id=\"parentDirLinkBox\">");
+              tw.WriteLine("    <a id=\"parentDirLink\" class=\"icon up\" href=\"{0}\">", uplink.Item1);
+              tw.WriteLine("      <span id=\"parentDirText\">{0}</span>", uplink.Item2);
+              tw.WriteLine("    </a>");
+              tw.WriteLine("  </div>");
+            }
+            return tw.ToString();
+          }
+
+        case "COLUMNS":
+          using (var tw = new StringWriter())
+          {
+            foreach (var col in columns)
+            {
+              tw.WriteLine("  <th id=\"dateColumnHeader\" class=\"detailsColumn\" tabindex=0 role=\"button\">");
+              tw.WriteLine("    {0}", col);
+              tw.WriteLine("  </th>");
+            }
+            return tw.ToString();
+          }
+
+        case "ITEMS":
+          using (var tw = new StringWriter())
+          {
+            items((icon, filename, fields) =>
+            {
+              tw.WriteLine("  <tr>");
+              tw.WriteLine("    <td><a class=\"icon {2}\" href=\"{1}{0}\">{0}</a></td>", filename, link_prefix, icon.ToString().ToLower());
+              foreach (var field in fields)
+              {
+                tw.WriteLine("    <td class=\"detailsColumn\">{0}</td>", field);
+              }
+              tw.WriteLine("  </tr>");
+            });
+            return tw.ToString();
+          }
+
+        default:
+          return "<!-- UNKNOWN PATTERN: " + key + " -->";
+      }
+    }));
+  }
+
+  // Returns the human-readable file size for an arbitrary, 64-bit file size 
+  // The default format is "0.### XB", e.g. "4.2 KB" or "1.434 GB"
+  public static string GetBytesReadable(long i)
+  {
+    // Get absolute value
+    long absolute_i = (i < 0 ? -i : i);
+    // Determine the suffix and readable value
+    string suffix;
+    double readable;
+    if (absolute_i >= 0x1000000000000000) // Exabyte
+    {
+      suffix = "EB";
+      readable = (i >> 50);
+    }
+    else if (absolute_i >= 0x4000000000000) // Petabyte
+    {
+      suffix = "PB";
+      readable = (i >> 40);
+    }
+    else if (absolute_i >= 0x10000000000) // Terabyte
+    {
+      suffix = "TB";
+      readable = (i >> 30);
+    }
+    else if (absolute_i >= 0x40000000) // Gigabyte
+    {
+      suffix = "GB";
+      readable = (i >> 20);
+    }
+    else if (absolute_i >= 0x100000) // Megabyte
+    {
+      suffix = "MB";
+      readable = (i >> 10);
+    }
+    else if (absolute_i >= 0x400) // Kilobyte
+    {
+      suffix = "KB";
+      readable = i;
+    }
+    else
+    {
+      return i.ToString("0 B"); // Byte
+    }
+    // Divide by 1024 to get fractional value
+    readable = (readable / 1024);
+    // Return formatted number with suffix
+    return readable.ToString("0.### ") + suffix;
   }
 }
 

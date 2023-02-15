@@ -9,11 +9,18 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="7.0.2" />
+    <PackageReference Include="MimeTypes" Version="2.4.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="semver" Version="2.2.0" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="sql/init.sql" ManifestResourceName="init.sql" />
+    <EmbeddedResource Include="data/init.sql" ManifestResourceName="init.sql" />
+    <EmbeddedResource Include="data/file_table.html" ManifestResourceName="file_table.html" />
+    <EmbeddedResource Include="data/zartbitter.ico" ManifestResourceName="zartbitter.ico" />
+    <EmbeddedResource Include="data/zartbitter.svg" ManifestResourceName="zartbitter.svg" />
   </ItemGroup>
 
 </Project>

@@ -20,19 +20,20 @@ CREATE TABLE IF NOT EXISTS "artifacts"
 -- contains a blob, checksums and some basic meta data.
 CREATE TABLE IF NOT EXISTS "revisions"
 (
-  "artifact"          TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
+  "artifact"          TEXT    NOT NULL REFERENCES "artifacts"("unique_name"),
 
-  "blob_storage_path" TEXT NOT NULL,
+  "blob_storage_path" TEXT    NOT NULL,
 
   -- Checksums for this blob
-  "md5sum"            TEXT NOT NULL,
-  "sha1sum"           TEXT NOT NULL,
-  "sha256sum"         TEXT NOT NULL,
-  "sha512sum"         TEXT NOT NULL,
+  "md5sum"            TEXT    NOT NULL,
+  "sha1sum"           TEXT    NOT NULL,
+  "sha256sum"         TEXT    NOT NULL,
+  "sha512sum"         TEXT    NOT NULL,
 
-  "creation_date"     TEXT NOT NULL,
-  "mime_type"         TEXT NOT NULL DEFAULT 'application/octet-stream',
-  "version"           TEXT NOT NULL
+  "creation_date"     TEXT    NOT NULL,
+  "size"              INTEGER NOT NULL,
+  "mime_type"         TEXT    NOT NULL DEFAULT 'application/octet-stream',
+  "version"           TEXT    NOT NULL
 );
 
 -- If any access token is provided, the access to an artifact is restricted.

@@ -32,6 +32,11 @@ static class Application
     system_listener.Prefixes.Add("http://+:8080/"); // TODO: Add configuration options
     system_listener.Start();
 
+    foreach (var name in Assembly.GetExecutingAssembly().GetManifestResourceNames())
+    {
+      Log.Debug("Resource: {0}", name);
+    }
+
     Log.Message("Ready.");
 
     var server = new Server(database, system_listener)

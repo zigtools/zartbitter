@@ -67,9 +67,14 @@ sealed class Database : IDisposable
   [PreparedStatement("SELECT blob_storage_path FROM revisions WHERE sha256sum = $checksum[text]")]
   public PreparedStatement CheckFileHashExists { get; private set; }
 
-  [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text])")]
+  [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version, size) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text], $size[integer])")]
   public PreparedStatement CreateNewRevision { get; private set; }
 
+  [PreparedStatement("SELECT REPLACE(artifact, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.unique_name = revisions.artifact AND artifacts.is_public ORDER BY artifact")]
+  public PreparedStatement ListAllPublicFiles { get; private set; }
+
+  [PreparedStatement("SELECT REPLACE(unique_name, \"{v}\", \"\") AS file_name, description FROM artifacts WHERE is_public ORDER BY unique_name")]
+  public PreparedStatement ListAllPublicArtifacts { get; private set; }
 
   public class PreparedStatement
   {
