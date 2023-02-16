@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Web;
 using Microsoft.Data.Sqlite;
 using Semver;
 using zartbitter;
@@ -45,6 +46,7 @@ internal class Server
     {
       var url = request.Url!;
       var path = url.AbsolutePath!;
+      var query = HttpUtility.ParseQueryString(url.Query);
 
       Log.Debug("{1}-Request for url {0}", url, request.HttpMethod);
       // foreach (var key in request.Headers.AllKeys)
@@ -91,6 +93,38 @@ internal class Server
         // Redirect to canonical path. Wouldn't make sense to query this
         // as an artifact, as artifact names must be unique and non-empty.
         response.Redirect("/artifacts");
+      }
+      else if (path.StartsWith("/artifacts/"))
+      {
+        var artifact_name = HttpUtility.UrlDecode(path.Substring("/artifacts/".Length));
+
+        if (!this.database.DoesArtifactExist(artifact_name))
+          throw new HttpException(HttpStatusCode.NotFound);
+
+        if (!this.database.CheckArtifactAccess(artifact_name, query["token"]))
+          throw new HttpException(HttpStatusCode.Unauthorized);
+
+        response.ContentEncoding = utf8_no_bom;
+        response.ContentType = "text/html";
+        using (var sw = new StreamWriter(response.OutputStream, utf8_no_bom))
+        {
+          RenderFileListing(sw, "/artifacts/", "Zartbitter Artifact: " + artifact_name.Replace("{v}", ""), Tuple.Create("/artifacts", "Artifact List"), new[] { "Mime Type", "Date", "Size" }, (emit) =>
+          {
+            using (var reader = this.database.ListAllPublicFilesForArtifact.ExecuteReader(ParameterBinding.Text("artifact", artifact_name)))
+            {
+              // file_name, mime_type, creation_date, size
+              while (reader.Read())
+              {
+                var name = reader.GetString(0);
+                var mime = reader.GetString(1);
+                var cdate = reader.GetString(2);
+                var size = reader.GetInt64(3);
+
+                emit(Icon.File, name, new[] { mime, cdate, GetBytesReadable(size) });
+              }
+            }
+          });
+        }
       }
       else if (path == "/files")
       {

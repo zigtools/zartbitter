@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS "artifacts"
 
   "is_public"   INTEGER NOT NULL DEFAULT 0, -- if non-zero, the artifact can be accessed without token
 
+  -- TODO: Include artifact root name and artifact versioned name
+
   CHECK ("unique_name" LIKE '%{v}%' AND length("unique_name") > 3)
 );
 

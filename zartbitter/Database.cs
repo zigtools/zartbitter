@@ -55,6 +55,17 @@ sealed class Database : IDisposable
     GC.SuppressFinalize(this);
   }
 
+  internal bool DoesArtifactExist(string artifact_name)
+  {
+    throw new NotImplementedException();
+  }
+
+  internal bool CheckArtifactAccess(string artifact_name, string? v)
+  {
+    // TODO: Check artifact access with access token
+    throw new NotImplementedException();
+  }
+
   [PreparedStatement("SELECT artifact FROM upload_tokens WHERE upload_token == $upload_token[text]")]
   public PreparedStatement GetArtifactFromUploadToken { get; private set; }
 
@@ -72,6 +83,9 @@ sealed class Database : IDisposable
 
   [PreparedStatement("SELECT REPLACE(artifact, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.unique_name = revisions.artifact AND artifacts.is_public ORDER BY artifact")]
   public PreparedStatement ListAllPublicFiles { get; private set; }
+
+  [PreparedStatement("SELECT REPLACE(artifact, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.unique_name = revisions.artifact WHERE revisions.artifact = $artifact[text] ORDER BY artifact")]
+  public PreparedStatement ListAllPublicFilesForArtifact { get; private set; }
 
   [PreparedStatement("SELECT REPLACE(unique_name, \"{v}\", \"\") AS file_name, description FROM artifacts WHERE is_public ORDER BY unique_name")]
   public PreparedStatement ListAllPublicArtifacts { get; private set; }
