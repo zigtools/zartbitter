@@ -55,15 +55,14 @@ sealed class Database : IDisposable
     GC.SuppressFinalize(this);
   }
 
-  internal bool DoesArtifactExist(string artifact_name)
+  public bool DoesArtifactExist(string artifact_name)
   {
-    throw new NotImplementedException();
+    return this.CheckArtifactExists.ExecuteBoolean(ParameterBinding.Text("artifact", artifact_name)) ?? false;
   }
 
-  internal bool CheckArtifactAccess(string artifact_name, string? v)
+  public bool CheckArtifactAccess(string artifact_name, string? token)
   {
-    // TODO: Check artifact access with access token
-    throw new NotImplementedException();
+    return this.CheckArtifactAccessStmt.ExecuteBoolean(ParameterBinding.Text("artifact", artifact_name), ParameterBinding.Text("token", token)) ?? false;
   }
 
   [PreparedStatement("SELECT artifact FROM upload_tokens WHERE upload_token == $upload_token[text]")]
@@ -74,6 +73,12 @@ sealed class Database : IDisposable
 
   [PreparedStatement("SELECT 1 FROM revisions WHERE artifact = $artifact[text] AND version = $version[text]")]
   public PreparedStatement CheckVersionExists { get; private set; }
+
+  [PreparedStatement("SELECT 1 FROM artifacts WHERE unique_name = $artifact[text]")]
+  public PreparedStatement CheckArtifactExists { get; private set; }
+
+  [PreparedStatement("SELECT 1 FROM access_tokens INNER JOIN artifacts ON artifacts.unique_name == access_tokens.artifact WHERE artifact == $artifact[text] AND (token == $token[text] OR (token IS NULL AND artifacts.is_public))")]
+  public PreparedStatement CheckArtifactAccessStmt { get; private set; }
 
   [PreparedStatement("SELECT blob_storage_path FROM revisions WHERE sha256sum = $checksum[text]")]
   public PreparedStatement CheckFileHashExists { get; private set; }
@@ -142,8 +147,16 @@ sealed class Database : IDisposable
       }
       foreach (var kv in bindings_dict)
       {
-        this.command.Parameters["$" + kv.Key].Value = kv.Value.Value;
+        this.command.Parameters["$" + kv.Key].Value = kv.Value.Value ?? DBNull.Value;
       }
+    }
+
+    public bool? ExecuteBoolean(params ParameterBinding[] bindings)
+    {
+      var is_true = this.ExecuteScalar<long?>(bindings);
+      if (is_true == null)
+        return null;
+      return (is_true != 0);
     }
 
     public T? ExecuteScalar<T>(params ParameterBinding[] bindings)
@@ -193,19 +206,19 @@ sealed class Database : IDisposable
 
 public class ParameterBinding
 {
-  private ParameterBinding(SqliteType type, string key, object value)
+  private ParameterBinding(SqliteType type, string key, object? value)
   {
     this.Type = type;
     this.Key = key;
     this.Value = value;
   }
 
-  public static ParameterBinding Text(string key, string value) => new ParameterBinding(SqliteType.Text, key, value);
-  public static ParameterBinding Integer(string key, long value) => new ParameterBinding(SqliteType.Integer, key, value);
-  public static ParameterBinding Blob(string key, byte[] value) => new ParameterBinding(SqliteType.Blob, key, value);
-  public static ParameterBinding Real(string key, double value) => new ParameterBinding(SqliteType.Real, key, value);
+  public static ParameterBinding Text(string key, string? value) => new ParameterBinding(SqliteType.Text, key, value);
+  public static ParameterBinding Integer(string key, long? value) => new ParameterBinding(SqliteType.Integer, key, value);
+  public static ParameterBinding Blob(string key, byte[]? value) => new ParameterBinding(SqliteType.Blob, key, value);
+  public static ParameterBinding Real(string key, double? value) => new ParameterBinding(SqliteType.Real, key, value);
 
   public SqliteType Type { get; }
   public string Key { get; }
-  public object Value { get; }
+  public object? Value { get; }
 }
