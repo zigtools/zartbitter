@@ -74,10 +74,10 @@ sealed class Database : IDisposable
   [PreparedStatement("SELECT 1 FROM revisions WHERE artifact = $artifact[text] AND version = $version[text]")]
   public PreparedStatement CheckVersionExists { get; private set; }
 
-  [PreparedStatement("SELECT 1 FROM artifacts WHERE unique_name = $artifact[text]")]
+  [PreparedStatement("SELECT 1 FROM artifacts WHERE identifier = $artifact[text]")]
   public PreparedStatement CheckArtifactExists { get; private set; }
 
-  [PreparedStatement("SELECT 1 FROM access_tokens INNER JOIN artifacts ON artifacts.unique_name == access_tokens.artifact WHERE artifact == $artifact[text] AND (token == $token[text] OR (token IS NULL AND artifacts.is_public))")]
+  [PreparedStatement("SELECT (is_public AND $token[text] IS NULL) OR (token IS NOT NULL) FROM artifacts LEFT JOIN access_tokens ON access_tokens.artifact == artifacts.identifier AND (access_tokens.token == $token[text]) WHERE artifacts.identifier == $artifact[text]")]
   public PreparedStatement CheckArtifactAccessStmt { get; private set; }
 
   [PreparedStatement("SELECT blob_storage_path FROM revisions WHERE sha256sum = $checksum[text]")]
@@ -86,13 +86,13 @@ sealed class Database : IDisposable
   [PreparedStatement("INSERT INTO revisions (artifact, blob_storage_path, md5sum, sha1sum, sha256sum, sha512sum, creation_date, version, size) VALUES ($artifact[text], $path[text], $md5sum[text], $sha1sum[text], $sha256sum[text], $sha512sum[text], CURRENT_TIMESTAMP, $version[text], $size[integer])")]
   public PreparedStatement CreateNewRevision { get; private set; }
 
-  [PreparedStatement("SELECT REPLACE(artifact, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.unique_name = revisions.artifact AND artifacts.is_public ORDER BY artifact")]
+  [PreparedStatement("SELECT REPLACE(artifacts.file_name, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.identifier = revisions.artifact AND artifacts.is_public ORDER BY artifact")]
   public PreparedStatement ListAllPublicFiles { get; private set; }
 
-  [PreparedStatement("SELECT REPLACE(artifact, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.unique_name = revisions.artifact WHERE revisions.artifact = $artifact[text] ORDER BY artifact")]
+  [PreparedStatement("SELECT REPLACE(artifacts.file_name, \"{v}\", version) AS file_name, mime_type, creation_date, size FROM revisions INNER JOIN artifacts ON artifacts.identifier = revisions.artifact WHERE revisions.artifact = $artifact[text] ORDER BY artifact")]
   public PreparedStatement ListAllPublicFilesForArtifact { get; private set; }
 
-  [PreparedStatement("SELECT REPLACE(unique_name, \"{v}\", \"\") AS file_name, description FROM artifacts WHERE is_public ORDER BY unique_name")]
+  [PreparedStatement("SELECT identifier AS file_name, description FROM artifacts WHERE is_public ORDER BY identifier")]
   public PreparedStatement ListAllPublicArtifacts { get; private set; }
 
   public class PreparedStatement

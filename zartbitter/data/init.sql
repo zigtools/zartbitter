@@ -8,21 +8,22 @@
 -- description for documentation.
 CREATE TABLE IF NOT EXISTS "artifacts"
 (
-  "unique_name" TEXT    NOT NULL PRIMARY KEY, -- must contain {v}
+  "identifier"  TEXT    NOT NULL PRIMARY KEY, -- artifact identifier, no version attached
   "description" TEXT    NOT NULL DEFAULT '',
+
+  "file_name"   TEXT    NOT NULL, -- must contain {v}, is the version pattern match
 
   "is_public"   INTEGER NOT NULL DEFAULT 0, -- if non-zero, the artifact can be accessed without token
 
-  -- TODO: Include artifact root name and artifact versioned name
-
-  CHECK ("unique_name" LIKE '%{v}%' AND length("unique_name") > 3)
+  CHECK(length("identifier") > 0),
+  CHECK ("file_name" LIKE '%{v}%' AND length("file_name") > 3)
 );
 
 -- Each artifact can have one or more versions, where each version
 -- contains a blob, checksums and some basic meta data.
 CREATE TABLE IF NOT EXISTS "revisions"
 (
-  "artifact"          TEXT    NOT NULL REFERENCES "artifacts"("unique_name"),
+  "artifact"          TEXT    NOT NULL REFERENCES "artifacts"("identifier"),
 
   "blob_storage_path" TEXT    NOT NULL,
 
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS "revisions"
 -- There can be more than one access tokens per artifact.
 CREATE TABLE IF NOT EXISTS "access_tokens"
 (
-  "artifact"   TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
+  "artifact"   TEXT NOT NULL REFERENCES "artifacts"("identifier"),
   "token"      TEXT NOT NULL,
   "expires_at" TEXT DEFAULT NULL, -- optional timestamp with expiration date
 
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS "access_tokens"
 -- the artifact.
 CREATE TABLE IF NOT EXISTS "upload_tokens"
 (
-  "artifact"       TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
+  "artifact"       TEXT NOT NULL REFERENCES "artifacts"("identifier"),
   "upload_token"   TEXT NOT NULL UNIQUE,
   "security_token" TEXT NOT NULL,
   "expires_at"     TEXT DEFAULT NULL, -- optional timestamp with expiration date
@@ -70,7 +71,7 @@ CREATE TABLE IF NOT EXISTS "upload_tokens"
 -- metadata tag ("nuget", "") can be enough to expose artifacts into a repository.
 CREATE TABLE IF NOT EXISTS "metadata"
 (
-  "artifact" TEXT NOT NULL REFERENCES "artifacts"("unique_name"),
+  "artifact" TEXT NOT NULL REFERENCES "artifacts"("identifier"),
   
   "key"       TEXT    NOT NULL,
   "value"     TEXT    NOT NULL,
