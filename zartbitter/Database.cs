@@ -11,6 +11,7 @@ sealed class Database : IDisposable
 {
   private SqliteConnection connection;
 
+#pragma warning disable CS8618
   public Database(string connection_string)
   {
     this.connection = new SqliteConnection(connection_string);
@@ -44,6 +45,8 @@ sealed class Database : IDisposable
     }
   }
 
+#pragma warning restore CS8618
+
   ~Database()
   {
     this.Dispose();
@@ -55,15 +58,24 @@ sealed class Database : IDisposable
     GC.SuppressFinalize(this);
   }
 
-  public bool DoesArtifactExist(string artifact_name)
-  {
-    return this.CheckArtifactExists.ExecuteBoolean(ParameterBinding.Text("artifact", artifact_name)) ?? false;
-  }
-
   public bool CheckArtifactAccess(string artifact_name, string? token)
   {
     return this.CheckArtifactAccessStmt.ExecuteBoolean(ParameterBinding.Text("artifact", artifact_name), ParameterBinding.Text("token", token)) ?? false;
   }
+
+  public bool CheckArtifactExists(string artifact_name)
+  {
+    return this.CheckArtifactExistsStmt.ExecuteBoolean(ParameterBinding.Text("artifact", artifact_name)) ?? false;
+  }
+
+  public string? FindArtifactByVersionedFileName(string version_string, string file_name)
+  {
+    return this.FindArtifactByVersionedFileNameStmt.ExecuteScalar<string?>(
+      ParameterBinding.Text("version", version_string),
+      ParameterBinding.Text("file_name", file_name)
+    );
+  }
+
 
   [PreparedStatement("SELECT artifact FROM upload_tokens WHERE upload_token == $upload_token[text]")]
   public PreparedStatement GetArtifactFromUploadToken { get; private set; }
@@ -75,7 +87,7 @@ sealed class Database : IDisposable
   public PreparedStatement CheckVersionExists { get; private set; }
 
   [PreparedStatement("SELECT 1 FROM artifacts WHERE identifier = $artifact[text]")]
-  public PreparedStatement CheckArtifactExists { get; private set; }
+  public PreparedStatement CheckArtifactExistsStmt { get; private set; }
 
   [PreparedStatement("SELECT (is_public AND $token[text] IS NULL) OR (token IS NOT NULL) FROM artifacts LEFT JOIN access_tokens ON access_tokens.artifact == artifacts.identifier AND (access_tokens.token == $token[text]) WHERE artifacts.identifier == $artifact[text]")]
   public PreparedStatement CheckArtifactAccessStmt { get; private set; }
@@ -94,6 +106,20 @@ sealed class Database : IDisposable
 
   [PreparedStatement("SELECT identifier AS file_name, description FROM artifacts WHERE is_public ORDER BY identifier")]
   public PreparedStatement ListAllPublicArtifacts { get; private set; }
+
+  [PreparedStatement("SELECT identifier, file_name FROM artifacts ORDER BY identifier")]
+  public PreparedStatement ListAllArtifacts { get; private set; }
+
+  [PreparedStatement("SELECT identifier FROM artifacts WHERE REPLACE(file_name, \"{v}\", $version[text]) == $file_name[text]")]
+  public PreparedStatement FindArtifactByVersionedFileNameStmt { get; private set; }
+
+  [PreparedStatement("SELECT version FROM revisions WHERE artifact = $artifact[text]")]
+  public PreparedStatement ListAllArtifactVersions { get; private set; }
+
+  [PreparedStatement("SELECT blob_storage_path, mime_type, md5sum, sha1sum, sha256sum, sha512sum FROM revisions WHERE artifact = $artifact[text] AND version = $version[text]")]
+  public PreparedStatement FetchRevisionInformation { get; private set; }
+
+  // SELECT artifact, is_public, blob_storage_path FROM revisions INNER JOIN artifacts ON revisions.artifact == artifacts.identifier WHERE REPLACE(artifacts.file_name, "{v}", revisions.version) == 'pkgs/zig/zig-opengl-0.1.0-beta.tar.gz'
 
   public class PreparedStatement
   {

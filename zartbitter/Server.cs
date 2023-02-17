@@ -19,11 +19,13 @@ internal class Server
   private readonly Database database;
   private readonly HttpListener system_listener;
 
+#pragma warning disable CS8618
   public Server(Database database, HttpListener system_listener)
   {
     this.database = database;
     this.system_listener = system_listener;
   }
+#pragma warning restore CS8618
 
   public DirectoryInfo BlobStorageDirectory { get; set; }
   public DirectoryInfo UploadStorageDirectory { get; set; }
@@ -98,7 +100,7 @@ internal class Server
       {
         var artifact_name = HttpUtility.UrlDecode(path.Substring("/artifacts/".Length));
 
-        if (!this.database.DoesArtifactExist(artifact_name))
+        if (!this.database.CheckArtifactExists(artifact_name))
           throw new HttpException(HttpStatusCode.NotFound);
 
         if (!this.database.CheckArtifactAccess(artifact_name, query["token"]))
@@ -108,7 +110,7 @@ internal class Server
         response.ContentType = "text/html";
         using (var sw = new StreamWriter(response.OutputStream, utf8_no_bom))
         {
-          RenderFileListing(sw, "/artifacts/", "Zartbitter Artifact: " + artifact_name.Replace("{v}", ""), Tuple.Create("/artifacts", "Artifact List"), new[] { "Mime Type", "Date", "Size" }, (emit) =>
+          RenderFileListing(sw, "/files/", "Zartbitter Artifact: " + artifact_name.Replace("{v}", ""), Tuple.Create("/artifacts", "Artifact List"), new[] { "Mime Type", "Date", "Size" }, (emit) =>
           {
             using (var reader = this.database.ListAllPublicFilesForArtifact.ExecuteReader(ParameterBinding.Text("artifact", artifact_name)))
             {
@@ -158,10 +160,139 @@ internal class Server
       }
       else if (path.StartsWith("/files/"))
       {
-        var artifact_name = path.Substring("/files/".Length);
+        var file_name = path.Substring("/files/".Length);
 
-        Log.Debug("Requesting artifact content for '{0}'", artifact_name);
-        // TODO: Serve files
+        string artifact_id;
+        ArtifactVersionSelector version_selector;
+        SemVersion? requested_artifact_version;
+
+        if (this.database.CheckArtifactExists(file_name))
+        {
+          // this is direct access to stable version by using artifact name instead
+          // of the actual file name
+          artifact_id = file_name;
+          version_selector = ArtifactVersionSelector.LatestStable;
+          requested_artifact_version = null;
+        }
+        else
+        {
+          var maybe_latest_artifact = this.database.FindArtifactByVersionedFileName("unstable", file_name);
+          if (maybe_latest_artifact != null)
+          {
+            // this is using a file with version "unstable" to get a link to the newest version
+            artifact_id = maybe_latest_artifact;
+            version_selector = ArtifactVersionSelector.LatestUnstable;
+            requested_artifact_version = null;
+          }
+          else
+          {
+            // else we have to search via an explicit version
+            using (var reader = this.database.ListAllArtifacts.ExecuteReader())
+            {
+              while (reader.Read())
+              {
+                var identifier = reader.GetString(0);
+                var artifact_file_name = reader.GetString(1);
+
+                var semver_regex_matcher = @"(?<semver>(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?)";
+
+                var filename_version_extractor = "^" + Regex.Escape(artifact_file_name).Replace("\\{v}", semver_regex_matcher) + "$";
+
+                Log.Debug("Construct regex: {0}", filename_version_extractor);
+                Log.Debug("Test file name: {0}", file_name);
+
+                var match = Regex.Match(file_name, filename_version_extractor);
+
+                if (!match.Success)
+                  continue;
+
+                Log.Debug("Found match!");
+
+                foreach (var key in match.Groups.Keys)
+                {
+                  Log.Debug("{0}: '{1}'", key, match.Groups[key].Value);
+                }
+
+                artifact_id = identifier;
+                requested_artifact_version = SemVersion.Parse(match.Groups["semver"].Value, SemVersionStyles.Strict);
+                version_selector = ArtifactVersionSelector.Explicit;
+
+                goto _found;
+              }
+              throw new HttpException(HttpStatusCode.NotFound);
+            _found:
+              ;
+            }
+          }
+        }
+
+        // Verify we can actually access the artifact at all.
+        if (!this.database.CheckArtifactAccess(artifact_id, query["token"]))
+        {
+          throw new HttpException(HttpStatusCode.Unauthorized);
+        }
+
+        switch (version_selector)
+        {
+          case ArtifactVersionSelector.Explicit:
+            Debug.Assert(requested_artifact_version != null);
+            break;
+
+          case ArtifactVersionSelector.LatestStable:
+          case ArtifactVersionSelector.LatestUnstable:
+            {
+              var available_versions = new List<SemVersion>();
+
+              using (var reader = this.database.ListAllArtifactVersions.ExecuteReader(ParameterBinding.Text("artifact", artifact_id)))
+              {
+                while (reader.Read())
+                {
+                  var version_string = reader.GetString(0);
+                  var version = SemVersion.Parse(version_string, SemVersionStyles.Strict);
+
+                  // Filter out prereleases when looking at stable versions
+                  if (version.IsPrerelease && (version_selector == ArtifactVersionSelector.LatestStable))
+                    continue;
+
+                  available_versions.Add(version);
+                }
+              }
+
+              if (available_versions.Count == 0)
+              {
+                throw new HttpException(HttpStatusCode.NotFound, "This artifact has no revisions.");
+              }
+
+              requested_artifact_version = available_versions.Max();
+            }
+            break;
+        }
+
+        Debug.Assert(requested_artifact_version != null);
+
+        using (var reader = this.database.FetchRevisionInformation.ExecuteReader(ParameterBinding.Text("artifact", artifact_id), ParameterBinding.Text("version", requested_artifact_version.ToString())))
+        {
+
+          Debug.Assert(reader.Read());
+
+          var blob_storage_path = reader.GetString(0);
+          var mime_type = reader.GetString(1);
+          var md5sum = reader.GetString(2);
+          var sha1sum = reader.GetString(3);
+          var sha256sum = reader.GetString(4);
+          var sha512sum = reader.GetString(5);
+
+          response.ContentType = mime_type;
+          response.AddHeader("X-Zartbitter-MD5", md5sum);
+          response.AddHeader("X-Zartbitter-SHA1", sha1sum);
+          response.AddHeader("X-Zartbitter-SHA256", sha256sum);
+          response.AddHeader("X-Zartbitter-SHA512", sha512sum);
+
+          using (var file_stream = File.Open(Path.Combine(this.BlobStorageDirectory.FullName, blob_storage_path), FileMode.Open, FileAccess.Read))
+          {
+            file_stream.CopyTo(response.OutputStream);
+          }
+        }
       }
       else if (path == "/api/upload")
       {
@@ -210,6 +341,8 @@ internal class Server
           Log.Message("Uploading new version {1} for artifact '{0}'", version, artifact_name);
 
           var temp_file_name = Path.Combine(UploadStorageDirectory.FullName, Path.ChangeExtension(Path.GetRandomFileName(), ".dat"));
+          var delete_temp_file = true;
+          var upload_successful = false;
           try
           {
             Log.Debug("Uploading to {0}", temp_file_name);
@@ -305,9 +438,11 @@ internal class Server
               File.Move(temp_file_name, full_path, false);
               temp_file_name = full_path;
               blob_storage_path = chosen_file_name;
+              delete_temp_file = false;
             }
             else
             {
+              delete_temp_file = true;
               Log.Debug("Found equivalent file with same hash: {0}", blob_storage_path);
             }
 
@@ -321,10 +456,12 @@ internal class Server
               ParameterBinding.Text("version", version.ToString()),
               ParameterBinding.Integer("size", copied_bytes)
             );
+            upload_successful = true;
           }
           finally
           {
-            File.Delete(temp_file_name);
+            if (delete_temp_file || !upload_successful)
+              File.Delete(temp_file_name);
           }
         }
       }
@@ -523,4 +660,11 @@ public sealed class HashComputer
     this.hasher.TransformFinalBlock(new byte[0], 0, 0);
     return this.hasher.Hash!.ToArray();
   }
+}
+
+public enum ArtifactVersionSelector
+{
+  Explicit,
+  LatestUnstable,
+  LatestStable,
 }
