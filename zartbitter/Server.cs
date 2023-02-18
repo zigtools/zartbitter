@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
+using System.Net.Mime;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
 using Microsoft.Data.Sqlite;
@@ -51,10 +54,6 @@ internal class Server
       var query = HttpUtility.ParseQueryString(url.Query);
 
       Log.Debug("{1}-Request for url {0}", url, request.HttpMethod);
-      // foreach (var key in request.Headers.AllKeys)
-      // {
-      //   Log.Debug("{0}: {1}", key!, request.Headers[key]!);
-      // }
 
       if (path == "/")
       {
@@ -162,117 +161,10 @@ internal class Server
       {
         var file_name = path.Substring("/files/".Length);
 
-        string artifact_id;
-        ArtifactVersionSelector version_selector;
-        SemVersion? requested_artifact_version;
+        var info = this.GetArtifact(file_name, query["token"]);
 
-        if (this.database.CheckArtifactExists(file_name))
+        using (var reader = this.database.FetchRevisionInformation.ExecuteReader(ParameterBinding.Text("artifact", info.ArtifactID), ParameterBinding.Text("version", info.Version.ToString())))
         {
-          // this is direct access to stable version by using artifact name instead
-          // of the actual file name
-          artifact_id = file_name;
-          version_selector = ArtifactVersionSelector.LatestStable;
-          requested_artifact_version = null;
-        }
-        else
-        {
-          var maybe_latest_artifact = this.database.FindArtifactByVersionedFileName("unstable", file_name);
-          if (maybe_latest_artifact != null)
-          {
-            // this is using a file with version "unstable" to get a link to the newest version
-            artifact_id = maybe_latest_artifact;
-            version_selector = ArtifactVersionSelector.LatestUnstable;
-            requested_artifact_version = null;
-          }
-          else
-          {
-            // else we have to search via an explicit version
-            using (var reader = this.database.ListAllArtifacts.ExecuteReader())
-            {
-              while (reader.Read())
-              {
-                var identifier = reader.GetString(0);
-                var artifact_file_name = reader.GetString(1);
-
-                var semver_regex_matcher = @"(?<semver>(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?)";
-
-                var filename_version_extractor = "^" + Regex.Escape(artifact_file_name).Replace("\\{v}", semver_regex_matcher) + "$";
-
-                Log.Debug("Construct regex: {0}", filename_version_extractor);
-                Log.Debug("Test file name: {0}", file_name);
-
-                var match = Regex.Match(file_name, filename_version_extractor);
-
-                if (!match.Success)
-                  continue;
-
-                Log.Debug("Found match!");
-
-                foreach (var key in match.Groups.Keys)
-                {
-                  Log.Debug("{0}: '{1}'", key, match.Groups[key].Value);
-                }
-
-                artifact_id = identifier;
-                requested_artifact_version = SemVersion.Parse(match.Groups["semver"].Value, SemVersionStyles.Strict);
-                version_selector = ArtifactVersionSelector.Explicit;
-
-                goto _found;
-              }
-              throw new HttpException(HttpStatusCode.NotFound);
-            _found:
-              ;
-            }
-          }
-        }
-
-        // Verify we can actually access the artifact at all.
-        if (!this.database.CheckArtifactAccess(artifact_id, query["token"]))
-        {
-          throw new HttpException(HttpStatusCode.Unauthorized);
-        }
-
-        switch (version_selector)
-        {
-          case ArtifactVersionSelector.Explicit:
-            Debug.Assert(requested_artifact_version != null);
-            break;
-
-          case ArtifactVersionSelector.LatestStable:
-          case ArtifactVersionSelector.LatestUnstable:
-            {
-              var available_versions = new List<SemVersion>();
-
-              using (var reader = this.database.ListAllArtifactVersions.ExecuteReader(ParameterBinding.Text("artifact", artifact_id)))
-              {
-                while (reader.Read())
-                {
-                  var version_string = reader.GetString(0);
-                  var version = SemVersion.Parse(version_string, SemVersionStyles.Strict);
-
-                  // Filter out prereleases when looking at stable versions
-                  if (version.IsPrerelease && (version_selector == ArtifactVersionSelector.LatestStable))
-                    continue;
-
-                  available_versions.Add(version);
-                }
-              }
-
-              if (available_versions.Count == 0)
-              {
-                throw new HttpException(HttpStatusCode.NotFound, "This artifact has no revisions.");
-              }
-
-              requested_artifact_version = available_versions.Max();
-            }
-            break;
-        }
-
-        Debug.Assert(requested_artifact_version != null);
-
-        using (var reader = this.database.FetchRevisionInformation.ExecuteReader(ParameterBinding.Text("artifact", artifact_id), ParameterBinding.Text("version", requested_artifact_version.ToString())))
-        {
-
           Debug.Assert(reader.Read());
 
           var blob_storage_path = reader.GetString(0);
@@ -467,6 +359,167 @@ internal class Server
       }
       else if (path == "/api/metadata")
       {
+        var file_name = query["file_name"] ?? throw new HttpException(HttpStatusCode.BadRequest, "Missing file_name query.");
+
+        var accepted_types = request.AcceptTypes!.Select(type => new ContentType(type)).ToArray();
+        var available_types = new[]{
+          new ContentType("text/plain"),
+          new ContentType("text/json"),
+          new ContentType("text/html"),
+          // TODO: Implement XML query
+          // new ContentType("text/xml"),
+          // new ContentType("application/xml"),
+        };
+
+        var content_type = MatchMimeTypes(accepted_types, available_types) ?? throw new HttpException(HttpStatusCode.NotAcceptable);
+
+        Log.Debug("Select content type: {0}", content_type);
+
+        var info = this.GetArtifact(file_name, query["token"]);
+
+        var tags = new List<Tuple<string, string>>();
+
+        using (var reader = this.database.FetchArtifactMetadata.ExecuteReader(ParameterBinding.Text("artifact", info.ArtifactID)))
+        {
+          while (reader.Read())
+          {
+            var key = reader.GetString(0);
+            var value = reader.GetString(1);
+            var is_public = reader.GetInt64(2) != 0;
+
+            tags.Add(Tuple.Create(key, value));
+          }
+        }
+
+        var revisions = new List<Tuple<SemVersion>>();
+
+        using (var reader = this.database.FetchRevisionInformation.ExecuteReader(ParameterBinding.Text("artifact", info.ArtifactID), ParameterBinding.Text("version", info.Version.ToString())))
+        {
+          Debug.Assert(reader.Read());
+
+          var blob_storage_path = reader.GetString(0);
+          var mime_type = reader.GetString(1);
+          var md5sum = reader.GetString(2);
+          var sha1sum = reader.GetString(3);
+          var sha256sum = reader.GetString(4);
+          var sha512sum = reader.GetString(5);
+
+          response.ContentType = content_type.ToString();
+          response.ContentEncoding = utf8_no_bom;
+          using (var sw = new StreamWriter(response.OutputStream, utf8_no_bom))
+          {
+            switch (content_type.MediaType)
+            {
+              case "text/json":
+                {
+                  var tag_object = new JsonObject();
+
+                  foreach (var item in tags)
+                  {
+                    tag_object[item.Item1] = item.Item2;
+                  }
+
+                  var root_object = new JsonObject
+                  {
+                    { "artifact", info.ArtifactID },
+                    { "version", info.Version.ToString() },
+                    { "mime_type", mime_type },
+                    {
+                      "hashes",
+                      new JsonObject{
+                        {"md5", md5sum},
+                        {"sha1", sha1sum},
+                        {"sha256", sha256sum},
+                        {"sha512", sha512sum},
+                      }
+                    },
+                    { "tags", tag_object },
+                  };
+                  sw.Write(root_object.ToString());
+                }
+                break;
+
+              case "text/plain":
+                {
+                  sw.WriteLine("Artifact:  {0}", info.ArtifactID);
+                  sw.WriteLine("Version:   {0}", info.Version.ToString());
+                  sw.WriteLine("Mime type: {0}", mime_type);
+                  sw.WriteLine("Hashes:");
+                  sw.WriteLine("  MD5:    {0}", md5sum);
+                  sw.WriteLine("  SHA1:   {0}", sha1sum);
+                  sw.WriteLine("  SHA256: {0}", sha256sum);
+                  sw.WriteLine("  SHA512: {0}", sha512sum);
+
+                  if (tags.Count > 0)
+                  {
+                    sw.WriteLine("Tags:");
+                    var width = tags.Select(s => s.Item1.Length).Max();
+                    foreach (var item in tags)
+                    {
+                      sw.WriteLine("  {0} {1}", (item.Item1 + ":").PadRight(width + 1, ' '), item.Item2);
+                    }
+                  }
+                }
+                break;
+
+              case "text/html":
+                {
+                  sw.WriteLine("<!doctype html>");
+                  sw.WriteLine("<html><head><style>");
+                  sw.WriteLine(@"table {border-collapse: collapse; text-align: left}
+table td,table.list th { padding: 0.35em;}
+table.list td {border-top: 1px solid silver;}
+table.list td:nth-child(2),table.list th:nth-child(2){border-left: 1px solid silver;}
+table.props th{font-weight: bold;}");
+                  sw.WriteLine("</style></head><body>");
+                  sw.WriteLine("<h1>{0}</h1>", HttpUtility.HtmlEncode(info.ArtifactID));
+                  sw.WriteLine("<h2>Metadata</h2><table class=\"props\">");
+                  sw.WriteLine("<tr><th>Version:</th><td>{0}</td>", HttpUtility.HtmlEncode(info.Version.ToString()));
+                  sw.WriteLine("<tr><th>Mime type:</th><td>{0}</td>", HttpUtility.HtmlEncode(mime_type));
+                  sw.WriteLine("</table>");
+                  sw.WriteLine("<h2>Hashes</h2><table class=\"list\"><tr><th>Algorithm</th><th>Hash</th></tr>");
+                  sw.WriteLine("<tr><td>MD5</td><td>{0}</td></tr>", HttpUtility.HtmlEncode(md5sum));
+                  sw.WriteLine("<tr><td>SHA1</td><td>{0}</td></tr>", HttpUtility.HtmlEncode(sha1sum));
+                  sw.WriteLine("<tr><td>SHA256</td><td>{0}</td></tr>", HttpUtility.HtmlEncode(sha256sum));
+                  sw.WriteLine("<tr><td>SHA512</td><td>{0}</td></tr>", HttpUtility.HtmlEncode(sha512sum));
+                  sw.WriteLine("</table>");
+
+                  if (tags.Count > 0)
+                  {
+                    sw.WriteLine("<h2>Tags</h2><table class=\"list\"><tr><th>Tag</th><th>Value</th></tr>");
+                    var width = tags.Select(s => s.Item1.Length).Max();
+                    foreach (var item in tags)
+                    {
+                      if (Uri.TryCreate(item.Item2, new UriCreationOptions() { DangerousDisablePathAndQueryCanonicalization = true }, out var uri))
+                      {
+                        sw.WriteLine("<tr><td>{0}</td><td><a href=\"{2}\" target=\"_blank\">{1}</a></th>", HttpUtility.HtmlEncode(item.Item1), HttpUtility.HtmlEncode(item.Item2), uri.ToString());
+                      }
+                      else
+                      {
+                        sw.WriteLine("<tr><td>{0}</td><td>{1}</th>", HttpUtility.HtmlEncode(item.Item1), HttpUtility.HtmlEncode(item.Item2));
+                      }
+                    }
+                    sw.WriteLine("</table>");
+                  }
+                  sw.WriteLine("</body></html>");
+                }
+                break;
+
+              case "text/xml":
+              case "application/xml":
+                {
+                  // TODO: Implement
+                }
+                break;
+
+
+              default:
+                Debug.Assert(false);
+                break;
+            }
+          }
+        }
+
         // TODO: Implement API upload endpoint
         Log.Debug("Requesting api: metadata");
       }
@@ -490,10 +543,17 @@ internal class Server
     }
     catch (HttpException ex)
     {
-      response.StatusCode = (int)ex.StatusCode;
-      using (var writer = new StreamWriter(response.OutputStream, utf8_no_bom))
+      try
       {
-        writer.WriteLine(ex.Message);
+        response.StatusCode = (int)ex.StatusCode;
+        using (var writer = new StreamWriter(response.OutputStream, utf8_no_bom))
+        {
+          writer.WriteLine(ex.Message);
+        }
+      }
+      catch (Exception subex)
+      {
+        Log.Error("Failed to reject HTTP request: {0}", subex.ToString());
       }
     }
     catch (Exception ex)
@@ -509,6 +569,157 @@ internal class Server
         // silently ignore error
       }
     }
+  }
+
+  ContentType? MatchMimeTypes(ContentType[] accepted_types, ContentType[] available_types)
+  {
+    accepted_types = accepted_types
+    .OrderByDescending(key => double.Parse(key.Parameters["q"] ?? "1.0", CultureInfo.InvariantCulture))
+    .ToArray();
+
+    foreach (var accepted_type in accepted_types)
+    {
+      var any_match = available_types.FirstOrDefault(available_type => IsMimeMatching(accepted_type, available_type));
+      if (any_match != null)
+        return any_match;
+    }
+
+    return null;
+  }
+
+  private bool IsMimeMatching(ContentType accepted_type, ContentType available_type)
+  {
+    if (accepted_type.MediaType == available_type.MediaType)
+      return true;
+
+    var split_accept = accepted_type.MediaType.Split('/');
+    var split_avail = available_type.MediaType.Split('/');
+
+    if (split_accept[1] == "*" && split_accept[0] == split_avail[0])
+      return true;
+
+    if (split_accept[0] == "*") // ignore */foo as it's illegal anyways
+      return true;
+
+    return false;
+
+  }
+
+  class ArtifactQueryResult
+  {
+    public string ArtifactID { get; set; }
+
+    public SemVersion Version { get; set; }
+  }
+
+  private ArtifactQueryResult GetArtifact(string file_name, string? access_token)
+  {
+    string artifact_id;
+    ArtifactVersionSelector version_selector;
+    SemVersion? requested_artifact_version;
+
+    if (this.database.CheckArtifactExists(file_name))
+    {
+      // this is direct access to stable version by using artifact name instead
+      // of the actual file name
+      artifact_id = file_name;
+      version_selector = ArtifactVersionSelector.LatestStable;
+      requested_artifact_version = null;
+    }
+    else
+    {
+      var maybe_latest_artifact = this.database.FindArtifactByVersionedFileName("unstable", file_name);
+      if (maybe_latest_artifact != null)
+      {
+        // this is using a file with version "unstable" to get a link to the newest version
+        artifact_id = maybe_latest_artifact;
+        version_selector = ArtifactVersionSelector.LatestUnstable;
+        requested_artifact_version = null;
+      }
+      else
+      {
+        // else we have to search via an explicit version
+        using (var reader = this.database.ListAllArtifacts.ExecuteReader())
+        {
+          while (reader.Read())
+          {
+            var identifier = reader.GetString(0);
+            var artifact_file_name = reader.GetString(1);
+
+            var semver_regex_matcher = @"(?<semver>(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?)";
+
+            var filename_version_extractor = "^" + Regex.Escape(artifact_file_name).Replace("\\{v}", semver_regex_matcher) + "$";
+
+            // Log.Debug("Construct regex: {0}", filename_version_extractor);
+            // Log.Debug("Test file name: {0}", file_name);
+
+            var match = Regex.Match(file_name, filename_version_extractor);
+
+            if (!match.Success)
+              continue;
+
+            artifact_id = identifier;
+            requested_artifact_version = SemVersion.Parse(match.Groups["semver"].Value, SemVersionStyles.Strict);
+            version_selector = ArtifactVersionSelector.Explicit;
+
+            goto _found;
+          }
+          throw new HttpException(HttpStatusCode.NotFound);
+        _found:
+          ;
+        }
+      }
+    }
+
+    // Verify we can actually access the artifact at all.
+    if (!this.database.CheckArtifactAccess(artifact_id, access_token))
+    {
+      throw new HttpException(HttpStatusCode.Unauthorized);
+    }
+
+    switch (version_selector)
+    {
+      case ArtifactVersionSelector.Explicit:
+        Debug.Assert(requested_artifact_version != null);
+        break;
+
+      case ArtifactVersionSelector.LatestStable:
+      case ArtifactVersionSelector.LatestUnstable:
+        {
+          var available_versions = new List<SemVersion>();
+
+          using (var reader = this.database.ListAllArtifactVersions.ExecuteReader(ParameterBinding.Text("artifact", artifact_id)))
+          {
+            while (reader.Read())
+            {
+              var version_string = reader.GetString(0);
+              var version = SemVersion.Parse(version_string, SemVersionStyles.Strict);
+
+              // Filter out prereleases when looking at stable versions
+              if (version.IsPrerelease && (version_selector == ArtifactVersionSelector.LatestStable))
+                continue;
+
+              available_versions.Add(version);
+            }
+          }
+
+          if (available_versions.Count == 0)
+          {
+            throw new HttpException(HttpStatusCode.NotFound, "This artifact has no revisions.");
+          }
+
+          requested_artifact_version = available_versions.Max();
+        }
+        break;
+    }
+
+    Debug.Assert(requested_artifact_version != null);
+
+    return new ArtifactQueryResult
+    {
+      ArtifactID = artifact_id,
+      Version = requested_artifact_version!,
+    };
   }
 
   private static readonly string file_table_template = new StreamReader(Application.OpenEmbeddedResource("file_table.html"), utf8_no_bom).ReadToEnd();

@@ -119,6 +119,9 @@ sealed class Database : IDisposable
   [PreparedStatement("SELECT blob_storage_path, mime_type, md5sum, sha1sum, sha256sum, sha512sum FROM revisions WHERE artifact = $artifact[text] AND version = $version[text]")]
   public PreparedStatement FetchRevisionInformation { get; private set; }
 
+  [PreparedStatement("SELECT key, value, is_public FROM metadata WHERE artifact = $artifact[text]")]
+  public PreparedStatement FetchArtifactMetadata { get; private set; }
+
   // SELECT artifact, is_public, blob_storage_path FROM revisions INNER JOIN artifacts ON revisions.artifact == artifacts.identifier WHERE REPLACE(artifacts.file_name, "{v}", revisions.version) == 'pkgs/zig/zig-opengl-0.1.0-beta.tar.gz'
 
   public class PreparedStatement
