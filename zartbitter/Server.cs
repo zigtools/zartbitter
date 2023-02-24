@@ -519,9 +519,6 @@ table.props th{font-weight: bold;}");
             }
           }
         }
-
-        // TODO: Implement API upload endpoint
-        Log.Debug("Requesting api: metadata");
       }
       else
       {
