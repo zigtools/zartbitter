@@ -16,4 +16,3 @@ exec curl \
   -H "X-Zartbitter-Version: ${VERSION_NUMBER}" \
   -H "X-Zartbitter-Hash: $(sha1sum --binary "$1" | cut -d " " -f 1)" \
   http://localhost:8080/api/upload
- 
